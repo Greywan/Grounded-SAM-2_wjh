@@ -19,7 +19,7 @@ from tqdm import tqdm
 # import sys
 # sys.path.append('./wjh')
 from yolo.yolo_function import yolo_preprocess
-from utils.calculate_time import splitting_time_eachnum
+from utils.calculate_time import splitting_time_eachnum, TimeCalculator
 from loguru import logger
 from datetime import datetime
 from utils.vis import draw_box_specifycolor,draw_mask_specifycolor
@@ -100,10 +100,13 @@ def main(video_dir, output_dir, step, logger):
     """
     print("Total frames:", len(frame_names))
     # for start_frame_idx in range(0, len(frame_names), step):
-    times = {}
-    times['time_frame_all'] = 0
-
-    time_start = time.time()
+    # times = {}
+    # times['time_frame_all'] = 0
+    timer = TimeCalculator()
+    
+    timer.init_onetime('time_frame_real_all')
+    # time_start = time.time()
+    timer.start('time_frame_all')
     for frame_idx in tqdm(range(len(frame_names))):
         time_single_start = time.time()
 
@@ -126,19 +129,7 @@ def main(video_dir, output_dir, step, logger):
         mask_dict = MaskDictionaryModel(promote_type = PROMPT_TYPE_FOR_VIDEO, mask_name = f"mask_{image_base_name}.npy")
         # mask_path = os.path.join(sam_mask_path, f"{image_base_name}" + '.jpg')
         mask_path = os.path.join(mask_result_dir, f"{frame_idx}_{image_base_name}" + '.jpg')
-        # run Grounding DINO on the image
-        # inputs = processor(images=image, text=text, return_tensors="pt").to(device)
-        # with torch.no_grad():
-        #     outputs = grounding_model(**inputs)
 
-        # results = processor.post_process_grounded_object_detection(
-        #     outputs,
-        #     inputs.input_ids,
-        #     box_threshold=0.25,
-        #     text_threshold=0.25,
-        #     target_sizes=[image.size[::-1]]
-        # )
-        
         # run YOLOv8-seg on the image
         input_points = []
         input_labels = []
@@ -146,11 +137,12 @@ def main(video_dir, output_dir, step, logger):
         input_bboxes = []
         
         colorImage = np.array(image.convert("RGB"))
-        
+        timer.start('yolo_all')
         yolo_outputs = maskProcessor.yolo_preprocess(colorImage[:, :, ::-1], input_points,input_labels,
                                                     input_boxes, input_bboxes,logger, yolo_orimask_path, 
                                                     frame_idx, height, width,the=0.5)
-                                                    
+
+        timer.end('yolo_all')                     
         results_filteroutput, results_yolo, classnames_yolo = yolo_outputs
 
         masks_yolo_save_path = os.path.join(yolo_orimask_path,  f"{frame_idx}_{image_base_name}" + '.jpg')
@@ -160,20 +152,20 @@ def main(video_dir, output_dir, step, logger):
             logger.info(f"{image_base_name} : There is no object detected(yolo filtered)")
             cv2.imwrite(mask_path, colorImage)
             continue
-        # else:
-        yolo_predict = True
+
         input_boxes = results_filteroutput["boxes"] # .cpu().numpy()
         yolo_filtermask_single_path = os.path.join(yolo_filtermask_path, f"{frame_idx}_{image_base_name}" + '.jpg')
         yolo_filtermask_draw = draw_box_specifycolor(colorImage[:, :, ::-1], input_boxes,font_scale=0.4)
         cv2.imwrite(yolo_filtermask_single_path, yolo_filtermask_draw)
         
-
         # process the detection results
-        
-        # print("results[0]",results[0])
         OBJECTS = results_filteroutput["labels"]
+        timer.start('sam2_img_predict_all')
         # prompt SAM 2 image predictor to get the mask for the object
         masks, scores, logits = maskProcessor.sam2_img_predict(image, input_boxes)
+        timer.end('sam2_img_predict_all')
+
+        timer.start('sam2_img2video_prepare_all')
         """
         Step 3: Register each object's positive points to video predictor
         """
@@ -184,13 +176,11 @@ def main(video_dir, output_dir, step, logger):
             raise NotImplementedError("SAM 2 video predictor only support mask prompts")
 
         #debug vis
-        mask_2d_dict = copy.deepcopy(mask_dict)
+        # mask_2d_dict = copy.deepcopy(mask_dict)
         
         """
         Step 4: Propagate the video predictor to get the segmentation results for each frame
         """
-        # if frame_idx == 43:
-        #     import ipdb; ipdb.set_trace()
         objects_count = mask_dict.update_masks(tracking_annotation_dict=sam2_masks, iou_threshold=0.3, objects_count=objects_count)
         print("objects_count", objects_count)
     
@@ -198,7 +188,6 @@ def main(video_dir, output_dir, step, logger):
         if len(mask_dict.labels) == 0:
             print("No object detected in the frame, skip the frame {}".format(start_frame_idx))
             continue
-        
         
         sam2_video_predictor.reset_state(inference_state)
 
@@ -210,7 +199,7 @@ def main(video_dir, output_dir, step, logger):
                     object_info.mask,
                     img_path
                 )
-        
+        timer.end('sam2_img2video_prepare_all')
         #debug vis
         # for object_id, object_info in mask_2d_dict.labels.items():
         #     obj_idx = object_id
@@ -233,12 +222,14 @@ def main(video_dir, output_dir, step, logger):
             # mask_vis_save_path = os.path.join(mask_single_dir, f"{frame_idx}_{image_base_name}_{obj_idx}_videomask" + '.jpg')
             # cv2.imwrite(mask_vis_save_path, mask_vis)
         # debug vis
-
+        timer.start('propagate_in_video_prepare_all')
         video_segments = {}  # output the following {step} frames tracking masks
         (processing_order, clear_non_cond_mem, 
          batch_size) = sam2_video_predictor.propagate_in_video_prepare_wjh(inference_state, 
                                                                                          img_paths, max_frame_num_to_track=step, start_frame_idx=start_frame_idx)
-        
+        timer.end('propagate_in_video_prepare_all')
+
+        timer.start('propagate_in_video_all')
         for out_frame_idx in tqdm(processing_order, desc="propagate in video"):
             img_path = img_paths[out_frame_idx]
             output = sam2_video_predictor.propagate_in_video_wjh(inference_state, 
@@ -260,11 +251,12 @@ def main(video_dir, output_dir, step, logger):
 
             video_segments[out_frame_idx] = frame_masks
             sam2_masks = copy.deepcopy(frame_masks)
+        timer.end('propagate_in_video_all')
 
         time_single_cost = time.time() - time_single_start
         logger.info(f"{frame_idx}_{image_base_name} time cost:{time_single_cost}.")
 
-        times['time_frame_all'] += time_single_cost
+        # times['time_frame_all'] += time_single_cost
 
         print("video_segments:", len(video_segments))
         """
@@ -302,22 +294,28 @@ def main(video_dir, output_dir, step, logger):
             cv2.imwrite(os.path.join(mask_result_dir, f"{frame_idx}_{frame_name}" + '.jpg'), img_draw)
 
 
-    time_cost = time.time() - time_start
-    times = splitting_time_eachnum(times, len(frame_names), "all", "every_frame")
+    timer.end('time_frame_all')
+
+    timer.time_add('time_frame_real_all', timer.durations['yolo_all'])
+    timer.time_add('time_frame_real_all', timer.durations['sam2_img_predict_all'])
+    timer.time_add('time_frame_real_all', timer.durations['sam2_img2video_prepare_all'])
+    timer.time_add('time_frame_real_all', timer.durations['propagate_in_video_all'])
+
+    times = timer.splitting_time_eachnum(len(frame_names), "all", "every_frame")
     for key, value in times.items():
-        logger.info(f"{key}: {value:.2f} second")
+        logger.info(f"{key}: {value:.4f} second")
     """
     Step 6: Draw the results and save the video
     """
-    CommonUtils.draw_masks_and_box_with_supervision(video_dir, mask_data_dir, json_data_dir, result_dir)
+    # CommonUtils.draw_masks_and_box_with_supervision(video_dir, mask_data_dir, json_data_dir, result_dir)
 
-    create_video_from_images(result_dir, output_video_path, frame_rate=15)
+    # create_video_from_images(result_dir, output_video_path, frame_rate=15)
 
     
 if __name__ == '__main__':
 
     video_dir = "data/byd/20240903_out_choose"
-    output_dir = "./outputs/byd/bydlight_refinetest"
+    output_dir = "./outputs/byd/bydlight_0923_choose_time"
     os.makedirs(output_dir, exist_ok=True)
     spe_name = output_dir.split("/")[-1]
     # logger 
