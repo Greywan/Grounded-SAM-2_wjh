@@ -37,7 +37,8 @@ class MaskDictionaryModel:
 
     def update_masks(self, tracking_annotation_dict, iou_threshold=0.8, objects_count=0):
         updated_masks = {}
-
+        matched_tracking_ids = set()
+        tracking_ids = set(tracking_annotation_dict.labels.keys())
         for seg_obj_id, seg_mask in self.labels.items():  # tracking_masks
             flag = 0 
             new_mask_copy = ObjectInfo()
@@ -49,9 +50,10 @@ class MaskDictionaryModel:
                 # print("iou", iou)
                 if iou > iou_threshold:
                     flag = object_info.instance_id
-                    new_mask_copy.mask = seg_mask.mask
+                    new_mask_copy.mask = seg_mask.mask # seg_mask.mask
                     new_mask_copy.instance_id = object_info.instance_id
                     new_mask_copy.class_name = seg_mask.class_name
+                    matched_tracking_ids.add(object_id)
                     break
                 
             if not flag:
@@ -61,6 +63,12 @@ class MaskDictionaryModel:
                 new_mask_copy.mask = seg_mask.mask
                 new_mask_copy.class_name = seg_mask.class_name
             updated_masks[flag] = new_mask_copy
+        unmatched_tracking_ids = tracking_ids - matched_tracking_ids
+        for object_id in unmatched_tracking_ids:
+            updated_masks[object_id] = tracking_annotation_dict.labels[object_id]
+        # for object_id, object_info in tracking_annotation_dict.labels.items():
+        #     if object_id not in matched_tracking_ids:
+        #         updated_masks[object_id] = object_info
         self.labels = updated_masks
         return objects_count
 

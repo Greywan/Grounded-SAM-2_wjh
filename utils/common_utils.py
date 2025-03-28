@@ -35,6 +35,10 @@ class CommonUtils:
                 raise FileNotFoundError("Image file not found.")
             # load mask
             mask_npy_path = os.path.join(mask_path, "mask_"+raw_image_name.split(".")[0]+".npy")
+            output_image_path = os.path.join(output_path, raw_image_name)
+            if not os.path.isfile(mask_npy_path):
+                cv2.imwrite(output_image_path, image)
+                continue
             mask = np.load(mask_npy_path)
             # color map
             unique_ids = np.unique(mask)
@@ -49,7 +53,6 @@ class CommonUtils:
                     all_object_masks.append(object_mask[None])
             
             if len(all_object_masks) == 0:
-                output_image_path = os.path.join(output_path, raw_image_name)
                 cv2.imwrite(output_image_path, image)
                 continue
             # get n masks: (n, h, w)
